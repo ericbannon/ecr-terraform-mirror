@@ -57,34 +57,19 @@ name_prefix = "chainguar-image-mirror"
 
 # identity id (username) for your pull token
 cgr_username = "b3afeb8ee1de8a24fe87ccb26faee88b5ba3cac0/7d8f1d77937ae3d2"
-```
 
-# --- AWS ---
-```
-aws_region   = "us-east-2"      # Your AWS region
-aws_profile  = "default"        # AWS CLI profile to use (or leave null for env vars)
-```
+mirror_dry_run = false
 
-# --- Chainguard ---
-## Chainguard registry group (matches your cgr.dev/<group>/repo path)
-```
-group_name   = "bannon.dev"
-```
+repo_list = [
+  "cgr.dev/bannon.dev/datadog-agent",
+  "cgr.dev/bannon.dev/node",
+  "cgr.dev/bannon.dev/python",
+  "cgr.dev/bannon.dev/jdk",
+  "cgr.dev/bannon.dev/jre",
+  "cgr.dev/bannon.dev/envoy",
+]
 
-## Pull token for Chainguard registry
-### IMPORTANT: do NOT commit real tokens to version control.
-### Instead, copy this example -> terraform.tfvars, then paste your token there or load it from env.
-```
-chainguard_username= "<your-chainguard-pull-token>"
-```
-### --- ECR ---
-# Prefix for destination ECR repositories (everything will mirror under this path)
-```
-dst_prefix = "bannon.dev"
-```
-### --- Lambda ---
-```
-lambda_name  = "image-copy-all"
+copy_all_tags = true
 ```
 
 # Usage
@@ -123,11 +108,9 @@ terraform apply -auto-approve \
 ## Follow the logs for progress 
 
 ```
-  aws logs tail /aws/lambda/image-copy-all --region us-east-2 --follow
+aws logs tail /aws/lambda/image-copy-all --region us-east-2 --follow
 ```
-
 For a specific image (.e Datadog)
-
 ```
 aws logs tail /aws/lambda/image-copy-all --region us-east-2 --follow | grep datadog-agent
 ```
