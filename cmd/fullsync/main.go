@@ -31,15 +31,13 @@ import (
 
 // ---------- Event & config ----------
 
-// JobEvent is the payload we pass when chaining.
 type JobEvent struct {
-	Index int    `json:"index,omitempty"`
-	Repo  string `json:"repo,omitempty"`
+	Index    int    `json:"index,omitempty"`     // which repo in the list
+	Repo     string `json:"repo,omitempty"`      // single explicit repo (optional)
+	TagStart int    `json:"tag_start,omitempty"` // resume offset within a repo's tag list
 }
 
-func main() {
-	lambda.Start(handler)
-}
+func main() { lambda.Start(handler) }
 
 func handler(ctx context.Context, raw json.RawMessage) error {
 	start := time.Now()
@@ -59,17 +57,21 @@ func handler(ctx context.Context, raw json.RawMessage) error {
 		return nil
 	}
 
-	// If a specific repo is provided, process exactly that and exit (no chaining).
+	// Single-repo mode (no index advancement), but may paginate by tag_start.
 	if r := strings.TrimSpace(evt.Repo); r != "" {
-		log.Printf("Processing explicit repo: %s", r)
-		if err := mirrorSingleRepo(ctx, r); err != nil {
+		more, nextStart, total, processed, err := mirrorSingleRepoBatch(ctx, r, evt.TagStart)
+		if err != nil {
 			return fmt.Errorf("mirror explicit repo %q: %w", r, err)
 		}
-		log.Printf("Done explicit repo in %s", time.Since(start))
+		if more {
+			log.Printf("Repo %s: processed %d/%d tags, chaining to tag_start=%d", r, processed, total, nextStart)
+			return invokeSelfAsync(ctx, JobEvent{Repo: r, TagStart: nextStart})
+		}
+		log.Printf("Repo %s: completed all %d tags (elapsed %s)", r, total, time.Since(start))
 		return nil
 	}
 
-	// Index-bound checks.
+	// Index-based multi-repo chaining.
 	if evt.Index < 0 {
 		evt.Index = 0
 	}
@@ -77,34 +79,35 @@ func handler(ctx context.Context, raw json.RawMessage) error {
 		log.Printf("Index %d >= repo count %d; nothing to do.", evt.Index, len(repos))
 		return nil
 	}
-
 	current := repos[evt.Index]
-	log.Printf("Processing repo %d/%d: %s", evt.Index+1, len(repos), current)
+	log.Printf("Processing repo %d/%d: %s (tag_start=%d)", evt.Index+1, len(repos), current, evt.TagStart)
 
-	if err := mirrorSingleRepo(ctx, current); err != nil {
+	more, nextStart, total, processed, err := mirrorSingleRepoBatch(ctx, current, evt.TagStart)
+	if err != nil {
 		return fmt.Errorf("mirror %q: %w", current, err)
 	}
 
-	// Chain to next index if any remain.
-	next := evt.Index + 1
-	if next < len(repos) {
-		if err := invokeSelfAsync(ctx, JobEvent{Index: next}); err != nil {
-			return fmt.Errorf("invoke self for index=%d: %w", next, err)
-		}
-		log.Printf("Queued next index=%d (elapsed %s)", next, time.Since(start))
-	} else {
-		log.Printf("Completed all %d repos 🎉 (elapsed %s)", len(repos), time.Since(start))
+	if more {
+		log.Printf("Repo %s: processed %d/%d tags so far, chaining to tag_start=%d", current, processed, total, nextStart)
+		return invokeSelfAsync(ctx, JobEvent{Index: evt.Index, TagStart: nextStart})
 	}
 
+	// Move to next repo
+	next := evt.Index + 1
+	if next < len(repos) {
+		if err := invokeSelfAsync(ctx, JobEvent{Index: next, TagStart: 0}); err != nil {
+			return fmt.Errorf("invoke self for next index=%d: %w", next, err)
+		}
+		log.Printf("Completed repo %s; queued next repo index=%d (elapsed %s)", current, next, time.Since(start))
+		return nil
+	}
+	log.Printf("Completed all %d repos 🎉 (elapsed %s)", len(repos), time.Since(start))
 	return nil
 }
-
-// ---------- Event parsing ----------
 
 func parseJobEvent(raw json.RawMessage) (JobEvent, error) {
 	var evt JobEvent
 	if len(raw) == 0 {
-		// No payload; allow START_INDEX env.
 		idx := 0
 		if s := strings.TrimSpace(os.Getenv("START_INDEX")); s != "" {
 			if n, err := strconv.Atoi(s); err == nil {
@@ -200,50 +203,50 @@ func loadReposFromSSM(ctx context.Context, paramName string) ([]string, error) {
 	return normalizeRepoList(strings.Split(val, ",")), nil
 }
 
-// ---------- Mirroring logic (with "skip existing tag" optimization) ----------
+// ---------- Mirroring with per-repo tags, batching & skip-existing ----------
 
-func mirrorSingleRepo(ctx context.Context, srcRepo string) error {
+func mirrorSingleRepoBatch(ctx context.Context, srcRepo string, tagStart int) (more bool, nextStart int, total int, processed int, err error) {
 	if strings.EqualFold(os.Getenv("MIRROR_DRY_RUN"), "true") {
-		log.Printf("[DRY-RUN] Would mirror: %s", srcRepo)
-		return nil
+		log.Printf("[DRY-RUN] Would mirror: %s (from tag_start=%d)", srcRepo, tagStart)
+		return false, 0, 0, 0, nil
 	}
 
-	// 1) Source auth (cgr.dev)
+	// Source auth (cgr.dev)
 	srcUser := os.Getenv("CGR_USERNAME")
 	srcPass := os.Getenv("CGR_PASSWORD")
 	if srcUser == "" || srcPass == "" {
-		return fmt.Errorf("CGR_USERNAME/CGR_PASSWORD not set")
+		return false, 0, 0, 0, fmt.Errorf("CGR_USERNAME/CGR_PASSWORD not set")
 	}
 	srcAuth := &authn.Basic{Username: srcUser, Password: srcPass}
 
-	// 2) ECR auth + endpoint
+	// ECR client & auth
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
-		return err
+		return false, 0, 0, 0, err
 	}
 	ecr := ecrsvc.NewFromConfig(cfg)
 
 	ao, err := ecr.GetAuthorizationToken(ctx, &ecrsvc.GetAuthorizationTokenInput{})
 	if err != nil {
-		return fmt.Errorf("ecr:GetAuthorizationToken: %w", err)
+		return false, 0, 0, 0, fmt.Errorf("ecr:GetAuthorizationToken: %w", err)
 	}
 	if len(ao.AuthorizationData) == 0 {
-		return fmt.Errorf("no ECR authorization data")
+		return false, 0, 0, 0, fmt.Errorf("no ECR authorization data")
 	}
 	ad := ao.AuthorizationData[0]
 	dec, err := base64.StdEncoding.DecodeString(aws.ToString(ad.AuthorizationToken))
 	if err != nil {
-		return fmt.Errorf("decode ecr token: %w", err)
+		return false, 0, 0, 0, fmt.Errorf("decode ecr token: %w", err)
 	}
 	parts := strings.SplitN(string(dec), ":", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("unexpected ecr token format")
+		return false, 0, 0, 0, fmt.Errorf("unexpected ecr token format")
 	}
 	ecrPass := parts[1]
 	ecrEndpoint := strings.TrimPrefix(aws.ToString(ad.ProxyEndpoint), "https://")
 	dstAuth := &authn.Basic{Username: "AWS", Password: ecrPass}
 
-	// 3) Compute dest repo name; ensure it exists
+	// Compute dest repo name; ensure it exists
 	srcRegistry := os.Getenv("SRC_REGISTRY")
 	if srcRegistry == "" {
 		srcRegistry = "cgr.dev"
@@ -251,11 +254,9 @@ func mirrorSingleRepo(ctx context.Context, srcRepo string) error {
 	srcNoHost := strings.TrimPrefix(srcRepo, srcRegistry+"/")
 
 	dstPrefix := strings.Trim(strings.TrimPrefix(os.Getenv("DST_PREFIX"), "/"), " ")
-	var dstRepoName string
+	dstRepoName := srcNoHost
 	if dstPrefix != "" {
 		dstRepoName = path.Join(dstPrefix, srcNoHost)
-	} else {
-		dstRepoName = srcNoHost
 	}
 
 	_, err = ecr.DescribeRepositories(ctx, &ecrsvc.DescribeRepositoriesInput{
@@ -267,99 +268,143 @@ func mirrorSingleRepo(ctx context.Context, srcRepo string) error {
 			_, cerr := ecr.CreateRepository(ctx, &ecrsvc.CreateRepositoryInput{
 				RepositoryName: aws.String(dstRepoName),
 				ImageScanningConfiguration: &ecrtypes.ImageScanningConfiguration{
-					// NOTE: in your SDK version this field is a bool (not *bool)
+					// bool (not *bool) in your SDK
 					ScanOnPush: true,
 				},
 			})
 			if cerr != nil {
-				return fmt.Errorf("create ECR repo %s: %w", dstRepoName, cerr)
+				return false, 0, 0, 0, fmt.Errorf("create ECR repo %s: %w", dstRepoName, cerr)
 			}
 			log.Printf("Created ECR repo: %s", dstRepoName)
 		} else {
-			return fmt.Errorf("describe ECR repo %s: %w", dstRepoName, err)
+			return false, 0, 0, 0, fmt.Errorf("describe ECR repo %s: %w", dstRepoName, err)
 		}
 	}
 
-	// 4) Decide which tags to mirror
-	copyAll := strings.EqualFold(os.Getenv("COPY_ALL_TAGS"), "true")
+	// Decide which tags to mirror (REPO_TAGS_JSON > COPY_ALL_TAGS > latest)
 	var tags []string
-	if copyAll {
-		repoRef, err := name.NewRepository(srcRepo)
-		if err != nil {
-			return fmt.Errorf("parse src repository: %w", err)
+	if rt := strings.TrimSpace(os.Getenv("REPO_TAGS_JSON")); rt != "" {
+		var repoTags map[string][]string
+		if err := json.Unmarshal([]byte(rt), &repoTags); err == nil {
+			if custom, ok := repoTags[srcRepo]; ok && len(custom) > 0 {
+				tags = custom
+			}
+		} else {
+			log.Printf("WARN: REPO_TAGS_JSON invalid JSON; ignoring: %v", err)
 		}
-		tags, err = remote.List(repoRef, remote.WithAuth(srcAuth), remote.WithContext(ctx))
-		if err != nil {
-			return fmt.Errorf("list tags for %s: %w", srcRepo, err)
+	}
+	if len(tags) == 0 {
+		copyAll := strings.EqualFold(os.Getenv("COPY_ALL_TAGS"), "true")
+		if copyAll {
+			repoRef, err := name.NewRepository(srcRepo)
+			if err != nil {
+				return false, 0, 0, 0, fmt.Errorf("parse src repository: %w", err)
+			}
+			tags, err = remote.List(repoRef, remote.WithAuth(srcAuth), remote.WithContext(ctx))
+			if err != nil {
+				return false, 0, 0, 0, fmt.Errorf("list tags for %s: %w", srcRepo, err)
+			}
+			if len(tags) == 0 {
+				log.Printf("No tags found for %s", srcRepo)
+				return false, 0, 0, 0, nil
+			}
+		} else {
+			tags = []string{"latest"} // default smoke test
 		}
-		if len(tags) == 0 {
-			log.Printf("No tags found for %s", srcRepo)
-			return nil
+	}
+	total = len(tags)
+
+	// Determine batch window
+	maxPer := 10
+	if s := strings.TrimSpace(os.Getenv("MAX_TAGS_PER_INVOKE")); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxPer = n
 		}
-	} else {
-		tags = []string{"latest"} // fast smoke test
+	}
+	if tagStart < 0 {
+		tagStart = 0
+	}
+	if tagStart >= total {
+		return false, tagStart, total, 0, nil
+	}
+	end := tagStart + maxPer
+	if end > total {
+		end = total
 	}
 
-	// 5) For each tag: compare digests and skip if already identical in ECR
-	for _, tag := range tags {
+	// Time guard: avoid hitting 900s timeout mid-upload
+	deadline, hasDeadline := ctx.Deadline()
+	const buffer = 25 * time.Second
+
+	// Process batch
+	for i := tagStart; i < end; i++ {
+		if hasDeadline && time.Until(deadline) < buffer {
+			more = true
+			nextStart = i
+			processed = i - tagStart
+			return more, nextStart, total, processed, nil
+		}
+
+		tag := tags[i]
 		src := fmt.Sprintf("%s:%s", srcRepo, tag)
 		dst := fmt.Sprintf("%s/%s:%s", ecrEndpoint, dstRepoName, tag)
 
 		srcRef, err := name.ParseReference(src)
 		if err != nil {
-			return fmt.Errorf("parse src ref %s: %w", src, err)
+			return false, i, total, i - tagStart, fmt.Errorf("parse src ref %s: %w", src, err)
 		}
 		dstRef, err := name.ParseReference(dst)
 		if err != nil {
-			return fmt.Errorf("parse dst ref %s: %w", dst, err)
+			return false, i, total, i - tagStart, fmt.Errorf("parse dst ref %s: %w", dst, err)
 		}
 
-		// Get source descriptor (to obtain source digest)
+		// Source descriptor/digest
 		desc, err := remote.Get(srcRef, remote.WithAuth(srcAuth), remote.WithContext(ctx))
 		if err != nil {
-			return fmt.Errorf("get %s: %w", src, err)
+			return false, i, total, i - tagStart, fmt.Errorf("get %s: %w", src, err)
 		}
 		srcDigest := desc.Descriptor.Digest.String()
 
-		// Query ECR for current tag digest (if present)
+		// Skip if same digest already tagged in ECR
 		ebr, err := ecr.BatchGetImage(ctx, &ecrsvc.BatchGetImageInput{
 			RepositoryName: aws.String(dstRepoName),
-			ImageIds: []ecrtypes.ImageIdentifier{
-				{ImageTag: aws.String(tag)},
-			},
+			ImageIds:       []ecrtypes.ImageIdentifier{{ImageTag: aws.String(tag)}},
 		})
 		if err == nil && len(ebr.Images) > 0 && ebr.Images[0].ImageId != nil && ebr.Images[0].ImageId.ImageDigest != nil {
-			existing := aws.ToString(ebr.Images[0].ImageId.ImageDigest)
-			if existing == srcDigest {
+			if aws.ToString(ebr.Images[0].ImageId.ImageDigest) == srcDigest {
 				log.Printf("Skipping %s (tag %q) — already present with digest %s", srcRepo, tag, srcDigest)
 				continue
 			}
 		}
 
-		// Copy image/index since it's missing or digest differs
+		// Write image or index
 		if desc.MediaType.IsIndex() {
 			idx, err := desc.ImageIndex()
 			if err != nil {
-				return fmt.Errorf("read index %s: %w", src, err)
+				return false, i, total, i - tagStart, fmt.Errorf("read index %s: %w", src, err)
 			}
 			log.Printf("Copying index %s -> %s", src, dst)
 			if err := remote.WriteIndex(dstRef, idx, remote.WithAuth(dstAuth), remote.WithContext(ctx)); err != nil {
-				return fmt.Errorf("write index to %s: %w", dst, err)
+				return false, i, total, i - tagStart, fmt.Errorf("write index to %s: %w", dst, err)
 			}
 		} else {
 			img, err := desc.Image()
 			if err != nil {
-				return fmt.Errorf("read image %s: %w", src, err)
+				return false, i, total, i - tagStart, fmt.Errorf("read image %s: %w", src, err)
 			}
 			log.Printf("Copying image %s -> %s", src, dst)
 			if err := remote.Write(dstRef, img, remote.WithAuth(dstAuth), remote.WithContext(ctx)); err != nil {
-				return fmt.Errorf("write image to %s: %w", dst, err)
+				return false, i, total, i - tagStart, fmt.Errorf("write image to %s: %w", dst, err)
 			}
 		}
 	}
 
-	log.Printf("Mirrored %s (%d tag(s) considered)", srcRepo, len(tags))
-	return nil
+	processed = end - tagStart
+	if end < total {
+		return true, end, total, processed, nil // more tags remain
+	}
+	log.Printf("Mirrored %s (processed %d tag(s) this run, total %d)", srcRepo, processed, total)
+	return false, end, total, processed, nil
 }
 
 // ---------- Self-invocation ----------
@@ -383,7 +428,7 @@ func invokeSelfAsync(ctx context.Context, ev JobEvent) error {
 
 	_, err = client.Invoke(ctx, &lambdasvc.InvokeInput{
 		FunctionName:   aws.String(fn),
-		InvocationType: lambdatypes.InvocationTypeEvent, // async
+		InvocationType: lambdatypes.InvocationTypeEvent,
 		Payload:        payload,
 	})
 	return err
