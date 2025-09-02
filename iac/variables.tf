@@ -76,3 +76,9 @@ variable "copy_all_tags" {
   type        = bool
   default     = false
 }
+
+variable "repo_tags" {
+  description = "Map of repo → list of tags to mirror"
+  type        = map(list(string))
+  default     = {}
+}

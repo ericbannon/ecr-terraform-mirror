@@ -105,6 +105,7 @@ resource "aws_lambda_function" "lambda" {
       # Optional knobs for your chaining main.go
       REPO_LIST_JSON = jsonencode(var.repo_list)
       COPY_ALL_TAGS  = tostring(var.copy_all_tags)
+      REPO_TAGS_JSON = jsonencode(var.repo_tags)
 
       # Booleans must be strings in Lambda env
       MIRROR_DRY_RUN = tostring(var.mirror_dry_run)
