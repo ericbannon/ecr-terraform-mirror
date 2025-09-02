@@ -39,9 +39,10 @@ Set these in your Terraform aws_lambda_function environment {}:
 ### Mirroring & Skips
 
 main.go uses the same underlying library (go-containerregistry), but through its Go APIs:
-	•	remote.List(repoRef, …) → lists tags from cgr.dev
-	•	remote.Get(srcRef, …) → pulls an image/index manifest
-	•	remote.Write(dstRef, img, …) / remote.WriteIndex(dstRef, idx, …) → pushes into ECR
+
+* remote.List(repoRef, …) → lists tags from cgr.dev
+* remote.Get(srcRef, …) → pulls an image/index manifest
+* remote.Write(dstRef, img, …) / remote.WriteIndex(dstRef, idx, …) → pushes into ECR
 
 ### Destination Repo Settings 
 
