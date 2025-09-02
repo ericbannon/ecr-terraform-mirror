@@ -58,3 +58,21 @@ variable "go_importpath" {
   default     = "fullsync.local/cmd/fullsync"
   description = "Import path to the Lambda entrypoint"
 }
+
+variable "repo_list" {
+  description = "List of source repos to mirror (cgr.dev/… paths)"
+  type        = list(string)
+  default     = []
+}
+
+variable "mirror_dry_run" {
+  description = "If true, do not actually push; just log"
+  type        = bool
+  default     = false
+}
+
+variable "copy_all_tags" {
+  description = "Mirror all tags for each repo (true) or just :latest (false)"
+  type        = bool
+  default     = false
+}

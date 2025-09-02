@@ -14,9 +14,14 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.every_4_hours.arn
 }
 
-# Connect the rule to your Lambda
+# Connect the rule to your Lambda, and start at index 0
 resource "aws_cloudwatch_event_target" "lambda_target" {
   rule      = aws_cloudwatch_event_rule.every_4_hours.name
   target_id = "lambda"
   arn       = aws_lambda_function.lambda.arn
+
+  # 👇 This kicks off the self-chaining at the first repo.
+  input = jsonencode({
+    index = 0
+  })
 }

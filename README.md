@@ -2,7 +2,7 @@
 
 ## Overview
 
-* lists all repos + tags in your Chainguard group (via Crane),
+* lists all repos + tags in your Chainguard group
 * ensures a matching ECR repo exists (same path, optional prefix),
 * creates the ECR repository if it does not exist
 * Pulls from cgr.dev/<namespace>/<repo>:<tag> and mirrors into ECR.
@@ -20,12 +20,28 @@ Note: ECR repo can be specified in the dst_repo variable in tfvars
 Set these in your Terraform aws_lambda_function environment {}:
 
 ```
-* GROUP_NAME — e.g., bannon.dev
-* SRC_REGISTRY — cgr.dev (default if omitted)
-* DST_PREFIX — optional; if set to bannon.dev, the ECR path becomes bannon.dev/<repo>. (Leave empty to mirror exactly).
-* CGR_USERNAME — your pull token ID (looks like orgId/tokenId)
-* CGR_PASSWORD — the pull token JWT (pass this into the terraform apply command. Do not hard code it)
+      SRC_REGISTRY = var.src_registry
+      GROUP_NAME   = var.group_name
+      DST_PREFIX   = var.dst_prefix
+
+      # Pull-token credentials for cgr.dev (username=identity id, password=JWT)
+      CGR_USERNAME = var.cgr_username
+      CGR_PASSWORD = var.cgr_password
+
+      # Optional knobs for your chaining main.go
+      REPO_LIST_JSON = jsonencode(var.repo_list)
+      COPY_ALL_TAGS  = tostring(var.copy_all_tags)
+
+      # Booleans must be strings in Lambda env
+      MIRROR_DRY_RUN = tostring(var.mirror_dry_run)
 ```
+
+### Mirroring & Skips
+
+main.go uses the same underlying library (go-containerregistry), but through its Go APIs:
+	•	remote.List(repoRef, …) → lists tags from cgr.dev
+	•	remote.Get(srcRef, …) → pulls an image/index manifest
+	•	remote.Write(dstRef, img, …) / remote.WriteIndex(dstRef, idx, …) → pushes into ECR
 
 ### Destination Repo Settings 
 
