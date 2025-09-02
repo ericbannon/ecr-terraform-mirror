@@ -19,11 +19,13 @@ Note: ECR repo can be specified in the dst_repo variable in tfvars
 
 Set these in your Terraform aws_lambda_function environment {}:
 
+```
 * GROUP_NAME — e.g., bannon.dev
 * SRC_REGISTRY — cgr.dev (default if omitted)
 * DST_PREFIX — optional; if set to bannon.dev, the ECR path becomes bannon.dev/<repo>. (Leave empty to mirror exactly).
 * CGR_USERNAME — your pull token ID (looks like orgId/tokenId)
 * CGR_PASSWORD — the pull token JWT (pass this into the terraform apply command. Do not hard code it)
+```
 
 ### Destination Repo Settings 
 
