@@ -1,0 +1,29 @@
+# Terraform caches/state (keep lock)
+iac/.terraform/*
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+!.terraform.lock.hcl
+**/.terraform.lock.hcl
+
+# Local secrets/creds
+.secrets/
+**/.secrets/
+.aws/
+**/.env
+*.pem
+
+# Go build artifacts
+bin/
+build/
+dist/
+*.out
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
