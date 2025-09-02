@@ -8,10 +8,10 @@
 * Pulls from cgr.dev/<namespace>/<repo>:<tag> and mirrors into ECR.
 * Uses your pull token for cgr.dev.
 * Auths into ECR via the AWS SDK default credentials chain.
-* Pre-checks if the image already exists in ECR (by tag+digest) before calling crane.Copy.
+* Pre-checks if the image already exists in ECR (by tag+digest) before copying
 * If it exists, it skips and logs skip exists without downloading layers
-* Only calls crane.Copy if not found, for speed and cost control.
 * schedule.tf runs the lamba function every 4 hours by default
+* Each repository copy is invoked in a single lambda function
 
 Note: ECR repo can be specified in the dst_repo variable in tfvars
 
