@@ -16,8 +16,6 @@ This project provisions a Lambda function with Terraform that mirrors images fro
 * Each repository copy is invoked in a single lambda function
 * repo-tags var allows to specify which tags to mirror (if not all or latest)
 
-Note: ECR repo can be specified in the dst_repo variable in tfvars
-
 ## Architecture
 
 ![Architecture Diagram](assets/arch.png)
