@@ -97,13 +97,18 @@ Note: requires pull token password during init. Your pull token username is defi
 
 ```
 cd iac/
+
 export AWS_PROFILE=cg-dev
 export AWS_REGION=us-east-2
+export CGR_PASSWORD=<pull-token-pass>
 
 terraform init -upgrade
-terraform plan
-terraform apply -auto-approve \
-  -var='cgr_password=<PULL_TOKEN_PASS>'
+
+terraform plan  -input=false \
+  -var="cgr_password=$CGR_PASSWORD"
+
+terraform apply -input=false -auto-approve \
+  -var="cgr_password=$CGR_PASSWORD"
 ```
 
 ## Invoke the Lambda Function
