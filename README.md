@@ -2,27 +2,36 @@
 
 This project provisions a Lambda function with Terraform that mirrors images from **cgr.dev** into **AWS ECR**.
 
-## Overview
+---
 
-* lists all repos + tags in your Chainguard group
-* ensures a matching ECR repo exists (same path, optional prefix),
-* creates the ECR repository if it does not exist
-* Pulls from cgr.dev/<namespace>/<repo>:<tag> and mirrors into ECR.
-* Uses your pull token for cgr.dev.
-* Auths into ECR via the AWS SDK default credentials chain.
-* Pre-checks if the image already exists in ECR (by tag+digest) before copying
-* If it exists, it skips and logs skip exists without downloading layers
-* schedule.tf runs the lamba function every 4 hours by default
-* Each repository copy is invoked in a single lambda function
-* repo-tags var allows to specify which tags to mirror (if not all or latest)
+## Overview  
 
-## Architecture
+* Scans your Chainguard namespace (`cgr.dev/<group>/<repo>`).  
+* Creates matching ECR repos if missing (optional `dst_prefix`).  
+* Authenticates with Chainguard pull token (`CGR_USERNAME`, `CGR_PASSWORD`).  
+* Authenticates to AWS ECR using the Lambda’s IAM role.  
+* Mirrors tags you specify (`repo_tags`, `copy_all_tags`, or default `latest`).  
+* Skips images already present in ECR (digest check).  
+* Triggered on a schedule (`schedule.tf` defaults to every 4 hours).  
+* Handles one repo per Lambda execution, with chaining across repos.  
+
+---
+
+## Architecture  
 
 ![Architecture Diagram](assets/arch.png)
 
-### Environment variables the Lambda expects
+* Lambda written in Go (`main.go`) orchestrates image pulls and pushes.  
+* Terraform provisions Lambda, IAM roles, CloudWatch schedule, and ECR repos.  
+* Uses [go-containerregistry](https://github.com/google/go-containerregistry) for image operations.  
+* `assets/arch.png` diagram shows the high-level flow.  
 
-Set these in your Terraform aws_lambda_function environment {}:
+---
+
+### Environment variables the Lambda expects  
+
+Set these in your Terraform `aws_lambda_function` `environment {}`:  
+
 
 ```
       SRC_REGISTRY = var.src_registry
@@ -42,18 +51,28 @@ Set these in your Terraform aws_lambda_function environment {}:
       MIRROR_DRY_RUN = tostring(var.mirror_dry_run)
 ```
 
-### Mirroring & Skips
+* `SRC_REGISTRY`, `GROUP_NAME`, `DST_PREFIX` → control source/destination registry paths.  
+* `CGR_USERNAME`, `CGR_PASSWORD` → Chainguard pull token creds.  
+* `REPO_LIST_JSON`, `COPY_ALL_TAGS`, `REPO_TAGS_JSON` → control repo/tag selection.  
+* `MIRROR_DRY_RUN` → set to `true` to test without pushing.  
 
-main.go uses the same underlying library (go-containerregistry), but through its Go APIs:
+---
 
-* remote.List(repoRef, …) → lists tags from cgr.dev
-* remote.Get(srcRef, …) → pulls an image/index manifest
-* remote.Write(dstRef, img, …) / remote.WriteIndex(dstRef, idx, …) → pushes into ECR
+### Mirroring & Skips  
 
-### Destination Repo Settings 
+* Uses `remote.List` → enumerate tags from Chainguard.  
+* Uses `remote.Get` → fetch manifests.  
+* Uses `remote.Write` / `remote.WriteIndex` → push into ECR.  
+* Before pushing, checks if tag+digest already exist in ECR.  
+* Skips duplicates and logs the skip.  
 
-terraform.tfvars
-```
+---
+
+### Destination Repo Settings  
+
+Example `terraform.tfvars`:  
+
+```hcl
 aws_region  = "us-east-2"
 aws_profile = "cg-dev"
 
@@ -79,10 +98,37 @@ repo_list = [
 copy_all_tags = true
 
 repo_tags = {
+  "cgr.dev/bannon.dev/node"          = ["22"]
+  "cgr.dev/bannon.dev/datadog-agent" = ["7.69", "7.69-dev"]
+}
+
+# identity id (username) for your pull token
+cgr_username = "b3afeb8ee1de8a24fe87ccb26faee88b5ba3cac0/7d8f1d77937ae3d2"
+
+mirror_dry_run = false
+
+repo_list = [
+  "cgr.dev/bannon.dev/datadog-agent",
+  "cgr.dev/bannon.dev/node",
+  "cgr.dev/bannon.dev/python",
+  "cgr.dev/bannon.dev/jdk",
+  "cgr.dev/bannon.dev/jre",
+  "cgr.dev/bannon.dev/envoy",
+]
+
+copy_all_tags = true
+
+repo_tags = {
   "cgr.dev/bannon.dev/node"        = ["22]
   "cgr.dev/bannon.dev/datadog-agent" = ["7.69", "7.69-dev"]
 }
 ```
+
+* Configure AWS region/profile, Chainguard group name, and function prefix.
+* Provide Chainguard pull token username and password (JWT).
+* Optional: dst_prefix to nest repos in ECR.
+* Control mirroring scope with repo_list, copy_all_tags, and repo_tags.
+* Example shows mirroring all tags for some repos and specific tags for others.
 
 # Usage
 
@@ -91,9 +137,14 @@ repo_tags = {
 ```
 go mod tidy
 ```
-## Create the image-copy-all repository to execute Lambda mirror from
+## Create the repository and deploy Lambda
 
 Note: requires pull token password during init. Your pull token username is defined in terraform.tfvars and configured to use this variable. 
+
+* Change into iac/.
+* Export AWS credentials/profile and Chainguard pull token password.
+* Run terraform init, plan, and apply with cgr_password.
+* Terraform provisions Lambda, ECR repos, IAM policy, and schedule.
 
 ```
 cd iac/
